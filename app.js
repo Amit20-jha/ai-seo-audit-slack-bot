@@ -14,6 +14,8 @@ if (missingVars.length > 0) {
   process.exit(1);
 }
 console.log('✅ All required environment variables are set.');
+console.log(`   SIGNING_SECRET length: ${process.env.SLACK_SIGNING_SECRET.length}`);
+console.log(`   BOT_TOKEN starts with: ${process.env.SLACK_BOT_TOKEN.substring(0, 5)}...`);
 
 const receiver = new ExpressReceiver({
   signingSecret: process.env.SLACK_SIGNING_SECRET,
@@ -21,10 +23,30 @@ const receiver = new ExpressReceiver({
   processBeforeResponse: true,
 });
 
-// ─── Raw request logging — runs BEFORE Bolt's signature verification ───
-receiver.router.use((req, res, next) => {
-  console.log(`🌐 [${new Date().toISOString()}] ${req.method} ${req.path} from ${req.ip}`);
+// ─── CRITICAL: Use receiver.app (not receiver.router) to log ALL requests ───
+// This runs BEFORE Bolt's signature verification so we can see everything
+receiver.app.use((req, res, next) => {
+  console.log(`🌐 [${new Date().toISOString()}] ${req.method} ${req.url} from ${req.ip}`);
   next();
+});
+
+// ─── Health check ───
+receiver.app.get('/', (req, res) => {
+  res.send('AI SEO Audit Slack Bot is running!');
+});
+
+// ─── Debug endpoint ───
+receiver.app.get('/debug', (req, res) => {
+  const status = {
+    SLACK_BOT_TOKEN: process.env.SLACK_BOT_TOKEN ? `✅ Set (${process.env.SLACK_BOT_TOKEN.length} chars)` : '❌ MISSING',
+    SLACK_SIGNING_SECRET: process.env.SLACK_SIGNING_SECRET ? `✅ Set (${process.env.SLACK_SIGNING_SECRET.length} chars)` : '❌ MISSING',
+    ANTHROPIC_API_KEY: process.env.ANTHROPIC_API_KEY ? `✅ Set (${process.env.ANTHROPIC_API_KEY.length} chars)` : '❌ MISSING',
+    PORT: process.env.PORT || '3000 (default)',
+    NODE_ENV: process.env.NODE_ENV || 'not set',
+    slackEndpoint: '/slack/events',
+    uptime: `${Math.floor(process.uptime())} seconds`,
+  };
+  res.json(status);
 });
 
 const app = new App({
@@ -134,29 +156,12 @@ function chunkText(text, length = 3000) {
   return chunks;
 }
 
-// ─── Health check routes ───
-receiver.router.get('/', (req, res) => {
-  res.send('AI SEO Audit Slack Bot is running!');
-});
-
-// Debug endpoint — shows env var status (values are redacted)
-receiver.router.get('/debug', (req, res) => {
-  const status = {
-    SLACK_BOT_TOKEN: process.env.SLACK_BOT_TOKEN ? '✅ Set' : '❌ MISSING',
-    SLACK_SIGNING_SECRET: process.env.SLACK_SIGNING_SECRET ? '✅ Set' : '❌ MISSING',
-    ANTHROPIC_API_KEY: process.env.ANTHROPIC_API_KEY ? '✅ Set' : '❌ MISSING',
-    PORT: process.env.PORT || '3000 (default)',
-    NODE_ENV: process.env.NODE_ENV || 'not set',
-    slackEndpoint: '/slack/events',
-  };
-  res.json(status);
-});
-
 (async () => {
   const port = process.env.PORT || 3000;
   await app.start(port);
   console.log(`🤖 AI SEO Audit Slack Bot is running on port ${port}!`);
-  console.log(`   Slack endpoint: /slack/events`);
-  console.log(`   Health check:   /`);
-  console.log(`   Debug info:     /debug`);
+  console.log(`   Slack endpoint: POST /slack/events`);
+  console.log(`   Health check:   GET  /`);
+  console.log(`   Debug info:     GET  /debug`);
 })();
+
