@@ -5,9 +5,20 @@ const seoAgent = require('./seoAgent');
 const pdfGenerator = require('./pdfGenerator');
 const fs = require('fs');
 
+// ─── Validate required environment variables at startup ───
+const requiredEnvVars = ['SLACK_BOT_TOKEN', 'SLACK_SIGNING_SECRET', 'ANTHROPIC_API_KEY'];
+const missingVars = requiredEnvVars.filter(v => !process.env[v]);
+if (missingVars.length > 0) {
+  console.error(`❌ FATAL: Missing required environment variables: ${missingVars.join(', ')}`);
+  console.error('   Please set them in Render Dashboard → Environment tab.');
+  process.exit(1);
+}
+console.log('✅ All required environment variables are set.');
+
 const receiver = new ExpressReceiver({
   signingSecret: process.env.SLACK_SIGNING_SECRET,
-  endpoints: '/slack/events', // Using /slack/events precisely as requested
+  endpoints: '/slack/events',
+  processBeforeResponse: true, // Ensures ack() completes before handler continues — critical for cloud hosts
 });
 
 const app = new App({
@@ -15,10 +26,18 @@ const app = new App({
   receiver,
 });
 
+// ─── Global Bolt error handler ───
+app.error(async (error) => {
+  console.error('⚠️ Bolt global error:', error);
+});
+
 // Acknowledge the slash command and start the workflow
 app.command('/seo-audit', async ({ command, ack, respond, client }) => {
-  // Acknowledge within 3 seconds
+  console.log('📥 Received /seo-audit command from user:', command.user_id);
+
+  // Acknowledge within 3 seconds — this MUST happen first
   await ack();
+  console.log('✅ Command acknowledged');
 
   const url = command.text.trim();
   const userId = command.user_id;
@@ -36,10 +55,14 @@ app.command('/seo-audit', async ({ command, ack, respond, client }) => {
   // Fire and forget the heavy process to avoid Slack timeout
   processAudit(url, command.channel_id, userId, client).catch(async (error) => {
     console.error("Audit error:", error);
-    await client.chat.postMessage({
-      channel: command.channel_id,
-      text: `<@${userId}> An error occurred while auditing \`${url}\`: ${error.message}`
-    });
+    try {
+      await client.chat.postMessage({
+        channel: command.channel_id,
+        text: `<@${userId}> An error occurred while auditing \`${url}\`: ${error.message}`
+      });
+    } catch (postErr) {
+      console.error("Failed to post error message to Slack:", postErr);
+    }
   });
 });
 
@@ -47,14 +70,17 @@ async function processAudit(url, channelId, userId, client) {
   let pdfPath = null;
   try {
     // 1. Scrape data
+    console.log(`[1/5] Scraping ${url}...`);
     await client.chat.postMessage({ channel: channelId, text: `Scraping data from ${url}...` });
     const scrapedData = await scraper.scrape(url);
 
     // 2. Generate report using Claude
+    console.log('[2/5] Generating AI report...');
     await client.chat.postMessage({ channel: channelId, text: `Data scraped. Generating AI SEO Report...` });
     const reportText = await seoAgent.generateReport(scrapedData);
 
     // 3. Post chunked report to Slack
+    console.log('[3/5] Posting report to Slack...');
     const chunks = chunkText(`*SEO Audit Report for ${url}*\n\n` + reportText, 3000);
     for (const chunk of chunks) {
       await client.chat.postMessage({
@@ -64,16 +90,20 @@ async function processAudit(url, channelId, userId, client) {
     }
 
     // 4. Generate PDF
+    console.log('[4/5] Generating PDF...');
     await client.chat.postMessage({ channel: channelId, text: `Generating PDF download...` });
     pdfPath = await pdfGenerator.generatePDF(url, reportText);
 
     // 5. Upload PDF file
+    console.log('[5/5] Uploading PDF...');
     await client.files.uploadV2({
       channel_id: channelId,
       initial_comment: `<@${userId}> Here is your downloadable SEO Audit Report for ${url}`,
       file: fs.createReadStream(pdfPath),
       filename: `SEO_Audit_Report_${new URL(url).hostname}.pdf`
     });
+
+    console.log('✅ Audit completed successfully for', url);
 
   } catch (err) {
     console.error("Audit processing error:", err);
@@ -98,13 +128,29 @@ function chunkText(text, length = 3000) {
   return chunks;
 }
 
-// Minimal health check root route for Render / Railway
+// ─── Health check routes ───
 receiver.router.get('/', (req, res) => {
   res.send('AI SEO Audit Slack Bot is running!');
+});
+
+// Debug endpoint — shows env var status (values are redacted)
+receiver.router.get('/debug', (req, res) => {
+  const status = {
+    SLACK_BOT_TOKEN: process.env.SLACK_BOT_TOKEN ? '✅ Set' : '❌ MISSING',
+    SLACK_SIGNING_SECRET: process.env.SLACK_SIGNING_SECRET ? '✅ Set' : '❌ MISSING',
+    ANTHROPIC_API_KEY: process.env.ANTHROPIC_API_KEY ? '✅ Set' : '❌ MISSING',
+    PORT: process.env.PORT || '3000 (default)',
+    NODE_ENV: process.env.NODE_ENV || 'not set',
+    slackEndpoint: '/slack/events',
+  };
+  res.json(status);
 });
 
 (async () => {
   const port = process.env.PORT || 3000;
   await app.start(port);
   console.log(`🤖 AI SEO Audit Slack Bot is running on port ${port}!`);
+  console.log(`   Slack endpoint: /slack/events`);
+  console.log(`   Health check:   /`);
+  console.log(`   Debug info:     /debug`);
 })();

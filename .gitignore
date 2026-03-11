@@ -1,3 +1,4 @@
-/.env
-/node_modules
-/seo_report_1773206832352.pdf
+node_modules/
+.env
+seo_report_*.pdf
+.cache/
