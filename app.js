@@ -18,7 +18,13 @@ console.log('✅ All required environment variables are set.');
 const receiver = new ExpressReceiver({
   signingSecret: process.env.SLACK_SIGNING_SECRET,
   endpoints: '/slack/events',
-  processBeforeResponse: true, // Ensures ack() completes before handler continues — critical for cloud hosts
+  processBeforeResponse: true,
+});
+
+// ─── Raw request logging — runs BEFORE Bolt's signature verification ───
+receiver.router.use((req, res, next) => {
+  console.log(`🌐 [${new Date().toISOString()}] ${req.method} ${req.path} from ${req.ip}`);
+  next();
 });
 
 const app = new App({
