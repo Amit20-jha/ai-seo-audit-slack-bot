@@ -24,7 +24,7 @@ Format the report using Markdown for readability in Slack and PDF but avoid usin
 
   try {
     const response = await anthropic.messages.create({
-      model: 'claude-3-haiku-20240307',
+      model: 'claude-sonnet-4-20250514',
       max_tokens: 2000,
       system: "You are an expert technical SEO analyst that provides concrete actionable feedback based on website data.",
       messages: [
